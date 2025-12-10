@@ -61,6 +61,8 @@ add_library(${target} STATIC
   core/ServerMessage.h
   core/WaylandWarnings.cpp
   core/WaylandWarnings.h
+  core/network/NetworkMonitor.cpp
+  core/network/NetworkMonitor.h
   dialogs/AboutDialog.cpp
   dialogs/AboutDialog.h
   dialogs/AboutDialog.ui

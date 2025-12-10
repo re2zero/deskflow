@@ -86,7 +86,9 @@ MainWindow::MainWindow()
       m_actionSettings{new QAction(this)},
       m_actionStartCore{new QAction(this)},
       m_actionRestartCore{new QAction(this)},
-      m_actionStopCore{new QAction(this)}
+      m_actionStopCore{new QAction(this)},
+      m_networkMonitor{new NetworkMonitor(this)},
+      m_coreRestartPending{false}
 {
   ui->setupUi(this);
 
@@ -165,6 +167,11 @@ MainWindow::MainWindow()
 }
 MainWindow::~MainWindow()
 {
+  // Stop network monitoring
+  if (m_networkMonitor) {
+    m_networkMonitor->stopMonitoring();
+  }
+
   m_guiDupeChecker->close();
   m_coreProcess.cleanup();
 }
@@ -199,6 +206,21 @@ void MainWindow::setupControls()
   ui->btnConfigureServer->setIcon(QIcon::fromTheme(QStringLiteral("configure")));
 
   updateNetworkInfo();
+
+  // Initialize network monitoring
+  m_networkMonitor->startMonitoring();
+
+  // Connect network signals
+  connect(m_networkMonitor, &NetworkMonitor::networkConfigurationChanged,
+          this, &MainWindow::onNetworkConfigurationChanged);
+  connect(m_networkMonitor, &NetworkMonitor::ipAddressesChanged,
+          this, &MainWindow::onIpAddressesChanged);
+
+  // Connect IP selection change signal
+  connect(ui->cmbIpAddresses, QOverload<int>::of(&QComboBox::currentIndexChanged),
+          this, &MainWindow::onIpAddressSelectionChanged);
+
+  ui->lblIpPrefix->setText(tr("Suggested IP: %1").arg(""));
 
   if (Settings::value(Settings::Core::LastVersion).toString() != kVersion) {
     Settings::setValue(Settings::Core::LastVersion, kVersion);
@@ -521,7 +543,8 @@ void MainWindow::coreModeToggled()
 
 void MainWindow::updateModeControls(bool serverMode)
 {
-  ui->lblIpAddresses->setVisible(serverMode);
+  ui->lblIpPrefix->setVisible(serverMode);
+  ui->cmbIpAddresses->setVisible(serverMode);
   ui->serverOptions->setVisible(serverMode);
   ui->clientOptions->setVisible(!serverMode);
   ui->lblNoMode->setVisible(false);
@@ -595,37 +618,86 @@ void MainWindow::updateNetworkInfo()
   QStringList ipList;
   QString suggestedAddress;
 
-  bool hinted = false;
+  // Use NetworkMonitor to get available addresses
+  const auto addresses = m_networkMonitor ? m_networkMonitor->getAvailableIPv4Addresses() : QVector<QHostAddress>();
 
-  const auto addresses = QNetworkInterface::allAddresses();
+  // Get the suggested IP from NetworkMonitor
+  const auto suggestedIp = m_networkMonitor ? m_networkMonitor->getSuggestedIPv4Address() : QHostAddress();
+
+  // Update the current IP
+  if (!suggestedIp.isNull()) {
+    m_currentIpAddress = suggestedIp;
+  }
+
+  if (addresses.isEmpty()) {
+    ui->cmbIpAddresses->clear();
+    ui->cmbIpAddresses->addItem(colorText.arg(palette().linkVisited().color().name(), tr("No IP Detected")));
+    ui->cmbIpAddresses->setItemData(0, tr("Unable to detect an IP address. Check your network connection is active."), Qt::ToolTipRole);
+    return;
+  }
+
+  // Update the IP address combobox
+  ui->cmbIpAddresses->clear();
+
+  // Create a set to track added IPs for deduplication
+  QSet<QString> addedIPs;
+
+  // Add suggested IP first (highlighted)
+  if (!suggestedIp.isNull() && !addedIPs.contains(suggestedIp.toString())) {
+    // Add the plain text IP with user data
+    ui->cmbIpAddresses->addItem(suggestedIp.toString(), suggestedIp.toString());
+
+    // Get the index of the item we just added
+    const int index = ui->cmbIpAddresses->count() - 1;
+
+    // Create a custom model index to set the foreground color
+    auto model = ui->cmbIpAddresses->model();
+    auto itemIndex = model->index(index, 0);
+
+    // Set the text color to highlight the suggested IP
+    model->setData(itemIndex, palette().link().color(), Qt::ForegroundRole);
+
+    // Also set the font to bold for better visual distinction
+    QFont font = ui->cmbIpAddresses->font();
+    font.setBold(true);
+    model->setData(itemIndex, font, Qt::FontRole);
+
+    addedIPs.insert(suggestedIp.toString());
+  }
+
+  // Add the rest of the IPs (deduplicated)
   for (const auto &address : addresses) {
-    if (address.protocol() == QAbstractSocket::IPv4Protocol && address != QHostAddress(QHostAddress::LocalHost) &&
-        !address.isInSubnet(QHostAddress::parseSubnet("169.254.0.0/16"))) {
-      // usually 192.168.x.x is a useful ip for the user, so indicate
-      // this by coloring it in the "link" color
-      if (!hinted && address.isInSubnet(QHostAddress::parseSubnet("192.168/16"))) {
-        suggestedAddress = address.toString();
-        ipList.append(colorText.arg(palette().link().color().name(), suggestedAddress));
-        hinted = true;
-      } else {
-        ipList.append(address.toString());
+    const auto addressString = address.toString();
+    if (!addedIPs.contains(addressString)) {
+      ui->cmbIpAddresses->addItem(addressString, addressString);
+      addedIPs.insert(addressString);
+    }
+  }
+
+  // Set the suggested IP as the current selection
+  if (!suggestedIp.isNull()) {
+    // Find the index using the user data (raw IP string)
+    for (int i = 0; i < ui->cmbIpAddresses->count(); ++i) {
+      if (ui->cmbIpAddresses->itemData(i).toString() == suggestedIp.toString()) {
+        ui->cmbIpAddresses->setCurrentIndex(i);
+        break;
       }
     }
   }
 
-  if (ipList.isEmpty()) {
-    ui->lblIpAddresses->setText(colorText.arg(palette().linkVisited().color().name(), tr("No IP Detected")));
-    ui->lblIpAddresses->setToolTip(tr("Unable to detect an IP address. Check your network connection is active."));
-    return;
+  // Create plain IP list for tooltip
+  QStringList plainIPList;
+  for (const auto &address : addresses) {
+    if (!plainIPList.contains(address.toString())) {
+      plainIPList.append(address.toString());
+    }
   }
 
-  ui->lblIpAddresses->setText(tr("Suggested IP: %1").arg(suggestedAddress.isEmpty() ? ipList.first() : suggestedAddress)
-  );
-
-  if (auto toolTipBase = tr("<p>If connecting via the hostname fails, try %1</p>"); ipList.count() < 2) {
-    ui->lblIpAddresses->setToolTip(toolTipBase.arg(tr("the suggested IP.")));
+  // Set tooltip
+  if (auto toolTipBase = tr("<p>If connecting via the hostname fails, try %1</p>"); plainIPList.count() < 2) {
+    ui->cmbIpAddresses->setToolTip(toolTipBase.arg(tr("the suggested IP.")));
   } else {
-    ui->lblIpAddresses->setToolTip(toolTipBase.arg(tr("one of the following IPs:<br/>%1").arg(ipList.join("<br/>"))));
+    ui->cmbIpAddresses->setToolTip(toolTipBase.arg(tr("one of the following IPs:<br/>%1").arg(plainIPList.join("<br/>"))));
   }
 }
 
@@ -1260,4 +1332,99 @@ void MainWindow::handleNewClientPromptRequest(const QString &clientName, bool us
   showAndActivate();
   bool result = deskflow::gui::messages::showNewClientPrompt(this, clientName, usePeerAuth);
   m_serverConnection.handleNewClientResult(clientName, result);
+}
+
+// Network monitoring related methods
+
+void MainWindow::onNetworkConfigurationChanged()
+{
+  // Check if IP address has changed
+  const auto currentIp = m_networkMonitor->getSuggestedIPv4Address();
+
+  if (!currentIp.isNull() && currentIp != m_currentIpAddress) {
+    m_currentIpAddress = currentIp;
+
+    // Update UI with new IP
+    updateNetworkInfo();
+
+    // If core is running, we need to restart it with the new IP
+    if (m_coreProcess.isStarted()) {
+      m_coreRestartPending = true;
+
+      // Show a message about IP change
+      setStatus(tr("Network IP changed, restarting service..."));
+
+      // Stop and restart the core process
+      m_coreProcess.restart();
+
+      m_coreRestartPending = false;
+    }
+  }
+}
+
+void MainWindow::onIpAddressesChanged(const QVector<QHostAddress> &addresses)
+{
+  // Check if the current IP is still available
+  bool currentIpAvailable = false;
+  if (!m_currentIpAddress.isNull()) {
+    for (const auto &address : addresses) {
+      if (address == m_currentIpAddress) {
+        currentIpAvailable = true;
+        break;
+      }
+    }
+  }
+
+  // If current IP is no longer available, switch to the suggested IP
+  if (!currentIpAvailable) {
+    const auto suggestedIp = m_networkMonitor->getSuggestedIPv4Address();
+    if (!suggestedIp.isNull()) {
+      m_currentIpAddress = suggestedIp;
+      m_networkMonitor->setSelectedIPAddress(suggestedIp);
+
+      // Update UI with the new IP
+      updateNetworkInfo();
+
+      // If core is running, restart it with the new IP
+      if (m_coreProcess.isStarted()) {
+        m_coreRestartPending = true;
+        setStatus(tr("Network changed, switching to new IP address..."));
+        m_coreProcess.restart();
+        m_coreRestartPending = false;
+      }
+    }
+  } else {
+    // Just update the UI if current IP is still available
+    updateNetworkInfo();
+  }
+}
+
+void MainWindow::onIpAddressSelectionChanged()
+{
+  // Get the selected IP from the combobox
+  // Use itemData to get the raw IP string, avoiding HTML tags
+  const QString selectedIpString = ui->cmbIpAddresses->currentData().toString();
+  if (selectedIpString.isEmpty()) {
+    return;
+  }
+
+  QHostAddress selectedIp(selectedIpString);
+  if (selectedIp.isNull()) {
+    return;
+  }
+
+  // Check if the selected IP has actually changed
+  if (selectedIp != m_currentIpAddress) {
+    // Update the selected IP in the network monitor
+    m_networkMonitor->setSelectedIPAddress(selectedIp);
+    m_currentIpAddress = selectedIp;
+
+    // If core is running, restart it with the new IP
+    if (m_coreProcess.isStarted()) {
+      m_coreRestartPending = true;
+      setStatus(tr("IP address changed, restarting service..."));
+      m_coreProcess.restart();
+      m_coreRestartPending = false;
+    }
+  }
 }

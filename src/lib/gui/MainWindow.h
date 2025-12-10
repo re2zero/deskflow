@@ -15,6 +15,7 @@
 #include <QSettings>
 #include <QSystemTrayIcon>
 #include <QThread>
+#include <QHostAddress>
 
 #include "VersionChecker.h"
 #include "config/ServerConfig.h"
@@ -22,6 +23,7 @@
 #include "gui/core/CoreProcess.h"
 #include "gui/core/ServerConnection.h"
 #include "gui/core/WaylandWarnings.h"
+#include "gui/core/network/NetworkMonitor.h"
 #include "net/Fingerprint.h"
 
 #ifdef Q_OS_MACOS
@@ -31,6 +33,7 @@
 class QAction;
 class QMenu;
 class QLabel;
+class QComboBox;
 class QLineEdit;
 class QGroupBox;
 class QPushButton;
@@ -58,6 +61,7 @@ class MainWindow : public QMainWindow
 {
   using CoreMode = Settings::CoreMode;
   using CoreProcess = deskflow::gui::CoreProcess;
+  using NetworkMonitor = deskflow::gui::core::network::NetworkMonitor;
 
   Q_OBJECT
 
@@ -152,6 +156,9 @@ private:
   void toggleCanRunCore(bool enableButtons);
   void remoteHostChanged(const QString &newRemoteHost);
   void handleNewClientPromptRequest(const QString &clientName, bool usePeerAuth);
+  void onNetworkConfigurationChanged();
+  void onIpAddressesChanged(const QVector<QHostAddress> &addresses);
+  void onIpAddressSelectionChanged();
   /**
    * @brief showClientError
    * @param error Error Type
@@ -218,4 +225,9 @@ private:
   QAction *m_actionStartCore = nullptr;
   QAction *m_actionRestartCore = nullptr;
   QAction *m_actionStopCore = nullptr;
+
+  // Network monitoring
+  NetworkMonitor *m_networkMonitor = nullptr;
+  QHostAddress m_currentIpAddress;
+  bool m_coreRestartPending = false;
 };

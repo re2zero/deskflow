@@ -128,7 +128,7 @@ MainWindow::MainWindow()
   m_actionStopCore->setIcon(QIcon::fromTheme(QIcon::ThemeIcon::ProcessStop));
   m_actionStopCore->setMenuRole(QAction::NoRole);
 
-  m_actionReportBug->setIcon(QIcon(QIcon::fromTheme(QStringLiteral("tools-report-bug"))));
+ m_actionReportBug->setIcon(QIcon::fromTheme(QStringLiteral("tools-report-bug")));
   m_actionReportBug->setMenuRole(QAction::NoRole);
 
   // Setup the Instance Checking
@@ -477,7 +477,7 @@ void MainWindow::openHelpUrl() const
 
 void MainWindow::openGetNewVersionUrl() const
 {
-  QDesktopServices::openUrl(kUrlDownload);
+  QDesktopServices::openUrl(QUrl(kUrlDownload));
 }
 
 void MainWindow::openSettings()
